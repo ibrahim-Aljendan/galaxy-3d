@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Galaxy</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:#000;overflow:hidden;font-family:"IBM Plex Sans Arabic",Tahoma,sans-serif}
+  canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+  canvas:active{cursor:grabbing}
+  .ui{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
+  .ui button{font-size:13px;font-weight:500;font-family:inherit;color:#fff;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.18);padding:8px 16px;border-radius:999px;cursor:pointer;backdrop-filter:blur(6px)}
+  .ui button[aria-pressed="true"]{background:#fff;color:#000}
+  .hint{position:fixed;top:calc(20px + env(safe-area-inset-top,0px));width:100%;text-align:center;color:rgba(255,255,255,.55);font-size:13px;letter-spacing:.06em;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">حرّك الماوس أو إصبعك • اضغط مطوّل عشان تنفجر</div>
+<div class="ui">
+  <button data-p="fire" aria-pressed="true">ناري</button>
+  <button data-p="silver" aria-pressed="false">فضي</button>
+  <button data-p="ice" aria-pressed="false">ثلجي</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ===== Settings you can play with =====
+const P = {
+  count: innerWidth < 700 ? 30000 : 70000, // number of stars
+  radius: 6,          // galaxy size
+  branches: 4,        // spiral arms
+  spin: 1.15,         // how much the arms twist
+  randomness: 0.38,   // how scattered stars are
+  randomnessPower: 3, // bigger = tighter arms
+  size: 26            // star size
+};
+const PALETTES = {
+  fire:   { inside:"#ffb347", outside:"#c2185b", dust:"#ff5a36" },
+  silver: { inside:"#ffffff", outside:"#5d6470", dust:"#cfd6e0" },
+  ice:    { inside:"#e8f4ff", outside:"#2b59c3", dust:"#7fc8ff" }
+};
+
+// ===== Scene =====
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:false, alpha:false });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(0, 3.6, 7.2);
+
+// ===== Galaxy geometry =====
+function makeGalaxy(count, isDust){
+  const g = new THREE.BufferGeometry();
+  const pos = new Float32Array(count*3), col = new Float32Array(count*3);
+  const scale = new Float32Array(count), rnd = new Float32Array(count*3);
+  for(let i=0;i<count;i++){
+    const i3 = i*3;
+    const r = Math.pow(Math.random(), isDust ? 0.8 : 1.6) * P.radius;
+    const branch = (i % P.branches) / P.branches * Math.PI * 2;
+    const spinA = r * P.spin;
+    const rr = () => Math.pow(Math.random(), P.randomnessPower) * (Math.random()<.5?1:-1) * P.randomness * r;
+    pos[i3]   = Math.cos(branch + spinA) * r + (isDust ? (Math.random()-.5)*2 : rr());
+    pos[i3+1] = isDust ? (Math.random()-.5)*1.2 : rr()*0.5;
+    pos[i3+2] = Math.sin(branch + spinA) * r + (isDust ? (Math.random()-.5)*2 : rr());
+    rnd[i3]=(Math.random()-.5)*2; rnd[i3+1]=(Math.random()-.5)*2; rnd[i3+2]=(Math.random()-.5)*2;
+    scale[i] = isDust ? 1 + Math.random()*1.8 : Math.random();
+  }
+  g.setAttribute("position", new THREE.BufferAttribute(pos,3));
+  g.setAttribute("color", new THREE.BufferAttribute(col,3));
+  g.setAttribute("aScale", new THREE.BufferAttribute(scale,1));
+  g.setAttribute("aRandom", new THREE.BufferAttribute(rnd,3));
+  return g;
+}
+
+const vertex = `
+  uniform float uTime, uSize, uScatter;
+  attribute float aScale;
+  attribute vec3 aRandom;
+  varying vec3 vColor;
+  void main(){
+    vec4 mp = modelMatrix * vec4(position, 1.0);
+    float d = length(mp.xz);
+    float a = atan(mp.z, mp.x) + (1.0 / (d + 0.6)) * uTime * 0.35;   // inner stars orbit faster
+    mp.x = cos(a) * d;
+    mp.z = sin(a) * d;
+    mp.xyz += aRandom * uScatter * (1.5 + d * 0.6);                   // explode on press
+    vec4 vp = viewMatrix * mp;
+    gl_Position = projectionMatrix * vp;
+    gl_PointSize = uSize * aScale * (1.0 / -vp.z);
+    vColor = color;
+  }`;
+const fragRound = `
+  varying vec3 vColor;
+  void main(){
+    float s = 1.0 - distance(gl_PointCoord, vec2(0.5)) * 2.0;
+    s = pow(max(s, 0.0), 2.2);
+    gl_FragColor = vec4(vColor * s, 1.0);
+  }`;
+const fragSquare = `
+  varying vec3 vColor;
+  void main(){
+    vec2 q = abs(gl_PointCoord - 0.5) * 2.0;
+    float s = 1.0 - max(q.x, q.y);
+    s = smoothstep(0.0, 0.35, s);
+    gl_FragColor = vec4(vColor * s * 0.8, 1.0);
+  }`;
+
+const uniforms = { uTime:{value:0}, uSize:{value:P.size*renderer.getPixelRatio()}, uScatter:{value:0} };
+const mat = (frag) => new THREE.ShaderMaterial({
+  vertexShader: vertex, fragmentShader: frag, uniforms,
+  vertexColors: true, depthWrite: false, blending: THREE.AdditiveBlending
+});
+
+const stars = new THREE.Points(makeGalaxy(P.count, false), mat(fragRound));
+const dust  = new THREE.Points(makeGalaxy(Math.round(P.count/90), true), mat(fragRound));
+const galaxy = new THREE.Group();
+galaxy.add(stars, dust);
+galaxy.rotation.x = 0.18;
+scene.add(galaxy);
+
+function paint(name){
+  const pal = PALETTES[name];
+  const cin = new THREE.Color(pal.inside), cout = new THREE.Color(pal.outside), cd = new THREE.Color(pal.dust);
+  const p = stars.geometry.attributes.position.array, c = stars.geometry.attributes.color.array;
+  for(let i=0;i<P.count;i++){
+    const i3=i*3, r=Math.hypot(p[i3],p[i3+2])/P.radius;
+    const m = cin.clone().lerp(cout, Math.min(r*1.15,1));
+    c[i3]=m.r; c[i3+1]=m.g; c[i3+2]=m.b;
+  }
+  stars.geometry.attributes.color.needsUpdate = true;
+  const dc = dust.geometry.attributes.color.array;
+  for(let i=0;i<dc.length;i+=3){ const k=.4+Math.random()*.6; dc[i]=cd.r*k; dc[i+1]=cd.g*k; dc[i+2]=cd.b*k; }
+  dust.geometry.attributes.color.needsUpdate = true;
+  document.querySelectorAll(".ui button").forEach(b => b.setAttribute("aria-pressed", b.dataset.p===name));
+}
+document.querySelectorAll(".ui button").forEach(b => b.addEventListener("click", () => paint(b.dataset.p)));
+paint("fire");
+
+// ===== Interaction =====
+let mx=0, my=0, tx=0, ty=0, scatterTarget=0;
+addEventListener("pointermove", e => { tx = (e.clientX/innerWidth - .5); ty = (e.clientY/innerHeight - .5); });
+canvas.addEventListener("pointerdown", () => scatterTarget = 1);
+addEventListener("pointerup", () => scatterTarget = 0);
+addEventListener("pointercancel", () => scatterTarget = 0);
+addEventListener("resize", () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const clock = new THREE.Clock();
+function frame(){
+  const t = clock.getElapsedTime();
+  uniforms.uTime.value = reduce ? 0 : t;
+  uniforms.uScatter.value += (scatterTarget - uniforms.uScatter.value) * 0.06;
+  mx += (tx - mx) * 0.05; my += (ty - my) * 0.05;
+  camera.position.x = mx * 4;
+  camera.position.y = 3.6 - my * 3;
+  camera.lookAt(0, 0, 0);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
